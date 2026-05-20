@@ -1921,7 +1921,10 @@ match cmd {
                     let _ = tx.send(CtrlReq::ShowOptionValue(rtx, name.to_string()));
                 }
                 if let Ok(text) = rrx.recv() {
-                    let resolved = if text.is_empty() && window_scope && has_a {
+                    let resolved = if text.is_empty() && window_scope {
+                        // Fall back to global options for options not in window scope
+                        // (e.g. pane-base-index). This matches tmux -A behavior and
+                        // is needed for libtmux compatibility.
                         let (frtx, frrx) = mpsc::channel::<String>();
                         let _ = tx.send(CtrlReq::ShowOptionValue(frtx, name.to_string()));
                         frrx.recv().unwrap_or_default()
@@ -2536,7 +2539,7 @@ match cmd {
         let fmt = extract_flag_value(&args, "-F");
         if let Some(fmt_str) = fmt {
             let (rtx, rrx) = mpsc::channel::<String>();
-            let _ = tx.send(CtrlReq::DisplayMessage(rtx, fmt_str, None, false, None));
+            let _ = tx.send(CtrlReq::SessionInfoFormat(rtx, fmt_str));
             if let Ok(text) = rrx.recv() {
                 if persistent {
                     let _ = tx.send(CtrlReq::ShowTextPopup("list-sessions".to_string(), text));
