@@ -507,6 +507,18 @@ pub fn resolve_default_session_name() -> Option<String> {
     None
 }
 
+pub fn resolve_session_target(target: &str, ns: Option<&str>, fallback: Option<&str>) -> Option<String> {
+    if target.starts_with('$') {
+        return fallback
+            .map(|s| s.to_string())
+            .or_else(|| resolve_last_session_name_ns(ns));
+    }
+    Some(match ns {
+        Some(prefix) => format!("{}__{}", prefix, target),
+        None => target.to_string(),
+    })
+}
+
 pub fn reap_children_placeholder() -> io::Result<bool> { Ok(false) }
 
 /// Return the names of all live sessions by scanning .psmux/*.port files.

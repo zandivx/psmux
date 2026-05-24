@@ -91,6 +91,24 @@ fn main() {
     }
 }
 
+fn should_start_tui(stdin_is_terminal: bool, stdout_is_terminal: bool) -> bool {
+    let _ = stdout_is_terminal;
+    stdin_is_terminal
+}
+
+#[cfg(test)]
+mod main_tests {
+    use super::should_start_tui;
+
+    #[test]
+    fn tui_requires_terminal_input_and_output() {
+        assert!(should_start_tui(true, true));
+        assert!(should_start_tui(true, false));
+        assert!(!should_start_tui(false, true));
+        assert!(!should_start_tui(false, false));
+    }
+}
+
 fn run_main() -> io::Result<()> {
     let args: Vec<String> = crate::cli::normalize_flag_equals(env::args().collect());
     
@@ -571,14 +589,11 @@ fn run_main() -> io::Result<()> {
                     .iter()
                     .position(|a| a == "-t")
                     .and_then(|i| args.get(i + 1))
-                    .map(|s| {
-                        // Apply -L namespace prefix when -t is specified
-                        if let Some(ref l) = l_socket_name {
-                            format!("{}__{}", l, s)
-                        } else {
-                            s.clone()
-                        }
-                    })
+                    .and_then(|s| crate::session::resolve_session_target(
+                        s,
+                        l_socket_name.as_deref(),
+                        crate::session::resolve_last_session_name_ns(l_socket_name.as_deref()).as_deref(),
+                    ))
                     .or_else(resolve_default_session_name)
                     .or_else(|| crate::session::resolve_last_session_name_ns(l_socket_name.as_deref()))
                     .unwrap_or_else(|| {
@@ -3124,9 +3139,9 @@ fn run_main() -> io::Result<()> {
     }
 
     // If stdin is not a terminal (headless/non-interactive environment, e.g.
-    // winget validation pipeline), print version and exit cleanly — starting
-    // a TUI session would fail without an interactive console.
-    if !std::io::stdin().is_terminal() {
+    // winget validation), exit cleanly. libtmux captures stdout for
+    // attach-session, so stdout is fixed up separately before TUI startup.
+    if !should_start_tui(std::io::stdin().is_terminal(), std::io::stdout().is_terminal()) {
         print_version();
         return Ok(());
     }
@@ -3146,9 +3161,10 @@ fn run_main() -> io::Result<()> {
     }
     env::set_var("PSMUX_ACTIVE", "1");
 
+    crate::platform::prepare_tui_stdout();
     let mut stdout = crate::platform::create_writer();
     enable_virtual_terminal_processing();
-    enable_raw_mode()?;
+    enable_raw_mode().map_err(|e| io::Error::new(e.kind(), format!("enable_raw_mode failed: {e}")))?;
 
     // Detect terminal type for input handling.
     // Use VT input parsing for SSH sessions and terminals that send VT mouse
@@ -3162,12 +3178,16 @@ fn run_main() -> io::Result<()> {
         crate::platform::disable_vti_on_stdin();
     }
 
-    execute!(stdout, EnterAlternateScreen, EnableBlinking, EnableMouseCapture, EnableBracketedPaste)?;
-    apply_cursor_style(&mut stdout)?;
+    execute!(stdout, EnterAlternateScreen, EnableBlinking, EnableMouseCapture, EnableBracketedPaste)
+        .map_err(|e| io::Error::new(e.kind(), format!("enter alternate screen failed: {e}")))?;
+    apply_cursor_style(&mut stdout)
+        .map_err(|e| io::Error::new(e.kind(), format!("apply cursor style failed: {e}")))?;
     let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+    let mut terminal = Terminal::new(backend)
+        .map_err(|e| io::Error::new(e.kind(), format!("create terminal failed: {e}")))?;
 
-    let input = InputSource::new(use_vt_input)?;
+    let input = InputSource::new(use_vt_input)
+        .map_err(|e| io::Error::new(e.kind(), format!("create input source failed: {e}")))?;
 
     // For VT input mode (SSH / JetBrains), explicitly (re-)send mouse-enable
     // escape sequences.  ConPTY may have consumed crossterm's

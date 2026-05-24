@@ -18,6 +18,27 @@
 #[allow(unused_imports)]
 use super::*;
 
+#[test]
+fn writer_can_be_constructed_without_terminal_stdout() {
+    #[cfg(windows)]
+    {
+        let _writer = crate::platform::create_writer();
+        assert!(true);
+    }
+
+    #[cfg(not(windows))]
+    assert!(true);
+}
+
+#[test]
+fn windows_console_output_device_name_includes_dollar_suffix() {
+    #[cfg(windows)]
+    assert_eq!(crate::platform::console_output_device_name_for_tests(), "CONOUT$");
+
+    #[cfg(not(windows))]
+    assert!(true);
+}
+
 fn mock_app() -> AppState {
     let mut app = AppState::new("test_session".to_string());
     app.window_base_index = 0;

@@ -13,6 +13,16 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
+#[test]
+fn tmux_session_id_target_resolves_to_last_session() {
+    assert_eq!(resolve_session_target("$0", None, Some("4-pane-split")), Some("4-pane-split".to_string()));
+}
+
+#[test]
+fn literal_session_target_is_preserved() {
+    assert_eq!(resolve_session_target("4-pane-split", None, Some("other")), Some("4-pane-split".to_string()));
+}
+
 /// Read the `AUTH <key>\n` + `session-info\n` lines the client sends so the
 /// fake server's subsequent writes land against the expected client state.
 fn drain_client_request(stream: &mut TcpStream) {

@@ -2151,12 +2151,7 @@ unsafe impl Send for Utf16ConsoleWriter {}
 #[cfg(windows)]
 impl Utf16ConsoleWriter {
     pub fn new() -> Self {
-        #[link(name = "kernel32")]
-        extern "system" {
-            fn GetStdHandle(nStdHandle: u32) -> *mut std::ffi::c_void;
-        }
-        const STD_OUTPUT_HANDLE: u32 = -11i32 as u32;
-        let handle = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
+        let handle = open_console_output_handle();
         // Pre-allocate ~128KB for the frame buffer — large enough for a
         // typical full-screen frame's escape sequences without reallocation.
         Self { handle, frame_buf: Vec::with_capacity(131072) }
@@ -2203,6 +2198,46 @@ impl Utf16ConsoleWriter {
         }
         Ok(())
     }
+
+    fn write_bytes(&self, bytes: &[u8]) -> std::io::Result<()> {
+        if bytes.is_empty() {
+            return Ok(());
+        }
+
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn WriteFile(
+                hFile: *mut std::ffi::c_void,
+                lpBuffer: *const u8,
+                nNumberOfBytesToWrite: u32,
+                lpNumberOfBytesWritten: *mut u32,
+                lpOverlapped: *mut std::ffi::c_void,
+            ) -> i32;
+        }
+
+        let mut total: usize = 0;
+        while total < bytes.len() {
+            let remaining = (bytes.len() - total).min(u32::MAX as usize);
+            let mut written: u32 = 0;
+            let ok = unsafe {
+                WriteFile(
+                    self.handle,
+                    bytes.as_ptr().add(total),
+                    remaining as u32,
+                    &mut written,
+                    std::ptr::null_mut(),
+                )
+            };
+            if ok == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if written == 0 {
+                break;
+            }
+            total += written as usize;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(windows)]
@@ -2237,7 +2272,14 @@ impl std::io::Write for Utf16ConsoleWriter {
         if valid > 0 {
             // Safety: we just validated this range is valid UTF-8.
             let s = unsafe { std::str::from_utf8_unchecked(&self.frame_buf[..valid]) };
-            self.write_wide(s)?;
+            if let Err(err) = self.write_wide(s) {
+                const ERROR_INVALID_FUNCTION: i32 = 1;
+                if err.raw_os_error() == Some(ERROR_INVALID_FUNCTION) {
+                    self.write_bytes(s.as_bytes())?;
+                } else {
+                    return Err(err);
+                }
+            }
         }
 
         // Keep any incomplete trailing bytes for the next flush.
@@ -2268,6 +2310,106 @@ pub type PsmuxWriter = Utf16ConsoleWriter;
 #[cfg(not(windows))]
 pub type PsmuxWriter = std::io::Stdout;
 
+#[cfg(windows)]
+fn open_console_output_handle() -> *mut std::ffi::c_void {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetStdHandle(nStdHandle: u32) -> *mut std::ffi::c_void;
+        fn GetConsoleMode(hConsoleHandle: *mut std::ffi::c_void, lpMode: *mut u32) -> i32;
+        fn CreateFileW(
+            file_name: *const u16,
+            desired_access: u32,
+            share_mode: u32,
+            security_attributes: *const std::ffi::c_void,
+            creation_disposition: u32,
+            flags_and_attributes: u32,
+            template_file: *const std::ffi::c_void,
+        ) -> isize;
+    }
+
+    const STD_OUTPUT_HANDLE: u32 = (-11i32) as u32;
+    const GENERIC_READ: u32 = 0x80000000;
+    const GENERIC_WRITE: u32 = 0x40000000;
+    const FILE_SHARE_READ: u32 = 0x00000001;
+    const FILE_SHARE_WRITE: u32 = 0x00000002;
+    const OPEN_EXISTING: u32 = 3;
+    const INVALID_HANDLE: isize = -1;
+
+    unsafe {
+        let handle = GetStdHandle(STD_OUTPUT_HANDLE);
+        if !handle.is_null() && handle != INVALID_HANDLE as *mut std::ffi::c_void {
+            let mut mode: u32 = 0;
+            if GetConsoleMode(handle, &mut mode) != 0 {
+                return handle;
+            }
+        }
+
+        let conout: Vec<u16> = console_output_device_name()
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let handle = CreateFileW(
+            conout.as_ptr(),
+            GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            0,
+            std::ptr::null(),
+        );
+
+        if handle != INVALID_HANDLE && handle != 0 {
+            return handle as *mut std::ffi::c_void;
+        }
+
+        GetStdHandle(STD_OUTPUT_HANDLE)
+    }
+}
+
+#[cfg(windows)]
+fn console_output_device_name() -> &'static str {
+    "CONOUT$"
+}
+
+#[cfg(all(windows, test))]
+pub(crate) fn console_output_device_name_for_tests() -> &'static str {
+    console_output_device_name()
+}
+
+#[cfg(windows)]
+pub fn prepare_tui_stdout() {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetStdHandle(nStdHandle: u32) -> *mut std::ffi::c_void;
+        fn GetConsoleMode(hConsoleHandle: *mut std::ffi::c_void, lpMode: *mut u32) -> i32;
+        fn SetStdHandle(nStdHandle: u32, hHandle: *mut std::ffi::c_void) -> i32;
+    }
+
+    const STD_OUTPUT_HANDLE: u32 = (-11i32) as u32;
+    const INVALID_HANDLE: isize = -1;
+
+    unsafe {
+        let current = GetStdHandle(STD_OUTPUT_HANDLE);
+        if !current.is_null() && current != INVALID_HANDLE as *mut std::ffi::c_void {
+            let mut mode: u32 = 0;
+            if GetConsoleMode(current, &mut mode) != 0 {
+                return;
+            }
+        }
+
+        let console = open_console_output_handle();
+        if !console.is_null() && console != INVALID_HANDLE as *mut std::ffi::c_void {
+            let mut mode: u32 = 0;
+            if GetConsoleMode(console, &mut mode) != 0 {
+                let _ = SetStdHandle(STD_OUTPUT_HANDLE, console);
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn prepare_tui_stdout() {}
+
 /// Create a new [`PsmuxWriter`].
 pub fn create_writer() -> PsmuxWriter {
     #[cfg(windows)]
@@ -2275,6 +2417,21 @@ pub fn create_writer() -> PsmuxWriter {
     #[cfg(not(windows))]
     { std::io::stdout() }
 }
+
+#[cfg(windows)]
+pub fn writer_is_console() -> bool {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetConsoleMode(hConsoleHandle: *mut std::ffi::c_void, lpMode: *mut u32) -> i32;
+    }
+
+    let handle = open_console_output_handle();
+    let mut mode: u32 = 0;
+    unsafe { GetConsoleMode(handle, &mut mode) != 0 }
+}
+
+#[cfg(not(windows))]
+pub fn writer_is_console() -> bool { true }
 
 // ---------------------------------------------------------------------------
 // Win32 System Caret — Accessibility / Speech-to-Text support
