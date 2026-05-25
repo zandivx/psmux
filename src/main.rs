@@ -3122,7 +3122,8 @@ fn run_main() -> io::Result<()> {
 
     // If stdin is not a terminal (headless/non-interactive environment, e.g.
     // winget validation pipeline), print version and exit cleanly — starting
-    // a TUI session would fail without an interactive console.
+    // a TUI session would fail without an interactive console. stdout may be
+    // captured by libtmux during attach-session; the writer fixes that below.
     if !std::io::stdin().is_terminal() {
         print_version();
         return Ok(());
@@ -3143,6 +3144,7 @@ fn run_main() -> io::Result<()> {
     }
     env::set_var("PSMUX_ACTIVE", "1");
 
+    crate::platform::prepare_tui_stdout();
     let mut stdout = crate::platform::create_writer();
     enable_virtual_terminal_processing();
     enable_raw_mode()?;
