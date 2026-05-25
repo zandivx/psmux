@@ -571,14 +571,11 @@ fn run_main() -> io::Result<()> {
                     .iter()
                     .position(|a| a == "-t")
                     .and_then(|i| args.get(i + 1))
-                    .map(|s| {
-                        // Apply -L namespace prefix when -t is specified
-                        if let Some(ref l) = l_socket_name {
-                            format!("{}__{}", l, s)
-                        } else {
-                            s.clone()
-                        }
-                    })
+                    .and_then(|s| crate::session::resolve_session_target(
+                        s,
+                        l_socket_name.as_deref(),
+                        crate::session::resolve_last_session_name_ns(l_socket_name.as_deref()).as_deref(),
+                    ))
                     .or_else(resolve_default_session_name)
                     .or_else(|| crate::session::resolve_last_session_name_ns(l_socket_name.as_deref()))
                     .unwrap_or_else(|| {
